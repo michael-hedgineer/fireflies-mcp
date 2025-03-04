@@ -52,7 +52,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "fireflies_search_transcripts",
-    description: "Search for transcripts containing specific keywords",
+    description: "Search for transcripts containing specific keywords, with optional date filtering. Returns a human-readable list of matching transcripts with metadata and summary information.",
     inputSchema: {
       type: "object",
       properties: {
@@ -62,7 +62,15 @@ const TOOLS: Tool[] = [
         },
         limit: {
           type: "number",
-          description: "Maximum number of transcripts to return (default: 10)"
+          description: "Maximum number of transcripts to return (default: 20)"
+        },
+        from_date: {
+          type: "string",
+          description: "Start date in ISO format (YYYY-MM-DD) to filter transcripts by date. If not specified, no lower date bound is applied."
+        },
+        to_date: {
+          type: "string",
+          description: "End date in ISO format (YYYY-MM-DD) to filter transcripts by date. If not specified, no upper date bound is applied."
         }
       },
       required: ["query"]
@@ -399,18 +407,22 @@ class FirefliesApiClient {
     }
   }
 
-  async searchTranscripts(searchQuery: string, limit?: number): Promise<any[]> {
+  async searchTranscripts(searchQuery: string, limit?: number, fromDate?: string, toDate?: string): Promise<any[]> {
     // Using the transcripts query with title parameter for search
     const query = `
       query Transcripts(
         $title: String
         $limit: Int
         $skip: Int
+        $fromDate: DateTime
+        $toDate: DateTime
       ) {
         transcripts(
           title: $title
           limit: $limit
           skip: $skip
+          fromDate: $fromDate
+          toDate: $toDate
         ) {
           id
           title
@@ -430,14 +442,48 @@ class FirefliesApiClient {
       }
     `;
 
-    const variables = {
+    // Set a reasonable default limit if not provided
+    const actualLimit = limit || 20;
+    
+    process.stderr.write(`Searching transcripts with query: "${searchQuery}", limit: ${actualLimit}, fromDate: ${fromDate || 'not specified'}, toDate: ${toDate || 'not specified'}\n`);
+
+    // Prepare variables
+    const variables: Record<string, any> = {
       title: searchQuery,
-      limit: limit || 10,
+      limit: actualLimit,
       skip: 0
     };
 
-    const data = await this.executeQuery(query, variables);
-    return data.transcripts;
+    // Add date filters if provided
+    if (fromDate) {
+      // Use ISO string format for DateTime
+      variables.fromDate = fromDate;
+      process.stderr.write(`Using fromDate: ${fromDate}\n`);
+    }
+
+    if (toDate) {
+      // Use ISO string format for DateTime
+      variables.toDate = toDate;
+      process.stderr.write(`Using toDate: ${toDate}\n`);
+    }
+
+    try {
+      process.stderr.write(`Executing searchTranscripts query...\n`);
+      const startTime = Date.now();
+      
+      const data = await this.executeQuery(query, variables);
+      
+      const endTime = Date.now();
+      process.stderr.write(`searchTranscripts query completed in ${endTime - startTime}ms\n`);
+      
+      const transcripts = data.transcripts || [];
+      process.stderr.write(`Found ${transcripts.length} matching transcripts\n`);
+      
+      return transcripts;
+    } catch (error) {
+      process.stderr.write(`Error in searchTranscripts: ${error instanceof Error ? error.message : String(error)}\n`);
+      throw error;
+    }
   }
 
   async generateTranscriptSummary(transcriptId: string, format: string = 'bullet_points'): Promise<string> {
@@ -798,7 +844,7 @@ To retrieve more transcripts, you can:
         }
 
         case "fireflies_search_transcripts": {
-          const { query, limit } = args;
+          const { query, limit, from_date, to_date } = args;
           
           if (!query) {
             throw new McpError(
@@ -807,16 +853,62 @@ To retrieve more transcripts, you can:
             );
           }
           
-          const transcripts = await this.apiClient.searchTranscripts(query, limit);
+          process.stderr.write(`Searching transcripts with query: "${query}", limit: ${limit || 'default'}, from_date: ${from_date || 'not specified'}, to_date: ${to_date || 'not specified'}\n`);
           
-          return {
-            toolResult: {
-              content: [{
-                type: "text",
-                text: JSON.stringify(transcripts, null, 2)
-              }]
+          try {
+            const transcripts = await this.apiClient.searchTranscripts(query, limit, from_date, to_date);
+            
+            // Create a more readable output
+            let resultText = `Found ${transcripts.length} matching transcripts for query: "${query}"\n\n`;
+            
+            if (transcripts.length === 0) {
+              resultText += `No transcripts found matching your search criteria. Try:\n`;
+              resultText += `- Using different search terms\n`;
+              resultText += `- Widening your date range\n`;
+              resultText += `- Increasing the limit parameter\n`;
+            } else {
+              transcripts.forEach((transcript: any, index: number) => {
+                resultText += `${index + 1}. ${transcript.title}\n`;
+                resultText += `   ID: ${transcript.id}\n`;
+                resultText += `   Date: ${transcript.dateString}\n`;
+                resultText += `   Duration: ${Math.floor(transcript.duration / 60)}m ${Math.floor(transcript.duration % 60)}s\n`;
+                
+                if (transcript.summary && transcript.summary.overview) {
+                  resultText += `   Overview: ${transcript.summary.overview}\n`;
+                }
+                
+                if (transcript.summary && transcript.summary.keywords && 
+                    Array.isArray(transcript.summary.keywords) && 
+                    transcript.summary.keywords.length > 0) {
+                  resultText += `   Keywords: ${transcript.summary.keywords.join(', ')}\n`;
+                }
+                
+                resultText += `\n`;
+              });
+              
+              resultText += `To view the full transcript, use the fireflies_get_transcript_details tool with the transcript ID.`;
             }
-          };
+            
+            return {
+              toolResult: {
+                content: [{
+                  type: "text",
+                  text: resultText
+                }]
+              }
+            };
+          } catch (error) {
+            process.stderr.write(`Error in fireflies_search_transcripts: ${error instanceof Error ? error.message : String(error)}\n`);
+            
+            if (error instanceof McpError) {
+              throw error;
+            }
+            
+            throw new McpError(
+              ErrorCode.InternalError,
+              `Error searching transcripts: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
 
         case "fireflies_generate_summary": {
