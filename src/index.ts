@@ -38,7 +38,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "fireflies_get_transcript_details",
-    description: "Retrieve detailed information about a specific transcript",
+    description: "Retrieve detailed information about a specific transcript. Returns a human-readable formatted transcript with speaker names and text, along with metadata and summary information.",
     inputSchema: {
       type: "object",
       properties: {
@@ -272,7 +272,7 @@ class FirefliesApiClient {
     }
   }
 
-  async getTranscriptDetails(transcriptId: string): Promise<any> {
+  async getTranscriptDetails(transcriptId: string, formatText: boolean = false): Promise<any> {
     const query = `
       query Transcript($transcriptId: String!) {
         transcript(id: $transcriptId) {
@@ -365,8 +365,38 @@ class FirefliesApiClient {
       transcriptId: transcriptId
     };
 
-    const data = await this.executeQuery(query, variables);
-    return data.transcript;
+    try {
+      process.stderr.write(`Getting transcript details for ID: ${transcriptId}\n`);
+      const data = await this.executeQuery(query, variables);
+      const transcript = data.transcript;
+      
+      if (!transcript) {
+        throw new McpError(ErrorCode.InvalidParams, `Transcript with ID ${transcriptId} not found`);
+      }
+      
+      // If formatText is true, format the sentences as a simple string
+      if (formatText && transcript.sentences && transcript.sentences.length > 0) {
+        // Create a formatted text version of the transcript
+        const formattedText = transcript.sentences.map((sentence: any) => {
+          return `${sentence.speaker_name}: ${sentence.text}`;
+        }).join('\n');
+        
+        // Replace the sentences array with the formatted text
+        transcript.formatted_text = formattedText;
+        
+        // Keep a minimal version of sentences for reference
+        transcript.sentences = transcript.sentences.map((sentence: any) => ({
+          index: sentence.index,
+          speaker_name: sentence.speaker_name,
+          text: sentence.text
+        }));
+      }
+      
+      return transcript;
+    } catch (error) {
+      process.stderr.write(`Error getting transcript details: ${error instanceof Error ? error.message : String(error)}\n`);
+      throw error;
+    }
   }
 
   async searchTranscripts(searchQuery: string, limit?: number): Promise<any[]> {
@@ -695,16 +725,76 @@ To retrieve more transcripts, you can:
             );
           }
           
-          const transcript = await this.apiClient.getTranscriptDetails(transcript_id);
+          process.stderr.write(`Getting transcript details for ID: ${transcript_id}\n`);
           
-          return {
-            toolResult: {
-              content: [{
-                type: "text",
-                text: JSON.stringify(transcript, null, 2)
-              }]
+          try {
+            // Get the transcript with formatted text
+            const transcript = await this.apiClient.getTranscriptDetails(transcript_id, true);
+            
+            // Create a more readable output
+            let resultText = `Title: ${transcript.title}\n`;
+            resultText += `Date: ${transcript.dateString}\n`;
+            resultText += `Duration: ${Math.floor(transcript.duration / 60)}m ${Math.floor(transcript.duration % 60)}s\n`;
+            
+            if (transcript.participants && transcript.participants.length > 0) {
+              resultText += `Participants: ${transcript.participants.join(', ')}\n`;
             }
-          };
+            
+            resultText += `\n--- Transcript ---\n\n`;
+            
+            // Use the formatted text if available
+            if (transcript.formatted_text) {
+              resultText += transcript.formatted_text;
+            } else {
+              // Fallback to formatting the sentences array
+              resultText += transcript.sentences.map((sentence: any) => 
+                `${sentence.speaker_name}: ${sentence.text}`
+              ).join('\n');
+            }
+            
+            // Add summary if available
+            if (transcript.summary) {
+              resultText += `\n\n--- Summary ---\n\n`;
+              
+              if (transcript.summary.overview) {
+                resultText += `Overview: ${transcript.summary.overview}\n\n`;
+              }
+              
+              if (transcript.summary.action_items && Array.isArray(transcript.summary.action_items) && 
+                  transcript.summary.action_items.length > 0) {
+                resultText += `Action Items:\n`;
+                transcript.summary.action_items.forEach((item: string) => {
+                  resultText += `- ${item}\n`;
+                });
+                resultText += '\n';
+              }
+              
+              if (transcript.summary.keywords && Array.isArray(transcript.summary.keywords) && 
+                  transcript.summary.keywords.length > 0) {
+                resultText += `Keywords: ${transcript.summary.keywords.join(', ')}\n`;
+              }
+            }
+            
+            return {
+              toolResult: {
+                content: [{
+                  type: "text",
+                  text: resultText
+                }]
+              }
+            };
+          } catch (error) {
+            process.stderr.write(`Error in fireflies_get_transcript_details: ${error instanceof Error ? error.message : String(error)}\n`);
+            
+            if (error instanceof McpError) {
+              throw error;
+            }
+            
+            throw new McpError(
+              ErrorCode.InternalError,
+              `Error retrieving transcript details: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
 
         case "fireflies_search_transcripts": {
