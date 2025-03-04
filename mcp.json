@@ -1,0 +1,19 @@
+{
+  "name": "mcp-server-fireflies",
+  "description": "MCP server for interacting with Fireflies.ai API",
+  "version": "1.0.0",
+  "author": "Your Organization",
+  "repoUrl": "https://github.com/your-org/mcp-server-fireflies",
+  "credentialRequirements": [
+    {
+      "name": "FIREFLIES_API_KEY",
+      "description": "Your Fireflies.ai API key",
+      "envVar": "FIREFLIES_API_KEY",
+      "required": true
+    }
+  ],
+  "binEntry": {
+    "name": "mcp-server-fireflies",
+    "path": "dist/index.js"
+  }
+} 
